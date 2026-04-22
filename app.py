@@ -292,11 +292,14 @@ def tts(text: str, path: str, voice: str, rate: str = "+8%") -> None:
     import threading
 
     async def _run():
-        c = edge_tts.Communicate(text, voice, rate=rate)
-        await c.save(path)
+        communicate = edge_tts.Communicate(text, voice, rate=rate)
+        with open(path, "wb") as f:
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    f.write(chunk["data"])
 
     def _in_thread():
-        asyncio.run(_run())   # asyncio.run() = 새 루프 + Task 컨텍스트 생성
+        asyncio.run(_run())
 
     t = threading.Thread(target=_in_thread)
     t.start()
