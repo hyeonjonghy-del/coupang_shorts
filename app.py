@@ -485,7 +485,28 @@ def main():
         )
 
         st.divider()
-        st.info("💡 영상 완성 후 설명란에\n파트너스 링크를 넣으면\n구매 발생 시 수익 발생!")
+        if st.button("🔍 사용 가능한 모델 조회", use_container_width=True):
+            with st.spinner("모델 목록 조회 중..."):
+                try:
+                    url  = f"{GEMINI_BASE}?key={api_key}"
+                    data = requests.get(url, timeout=10).json()
+                    names = []
+                    for m in data.get("models", []):
+                        name    = m.get("name", "").replace("models/", "")
+                        methods = m.get("supportedGenerationMethods", [])
+                        if "generateContent" in methods:
+                            names.append(name)
+                    if names:
+                        st.success(f"✅ {len(names)}개 모델 사용 가능")
+                        for n in names:
+                            st.code(n)
+                    else:
+                        st.warning("모델 없음")
+                        st.json(data)
+                except Exception as e:
+                    st.error(f"오류: {e}")
+
+
 
     if not api_key:
         st.warning("👈 왼쪽 사이드바에서 **Gemini API Key**를 입력해주세요")
