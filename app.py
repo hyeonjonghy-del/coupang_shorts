@@ -204,8 +204,29 @@ def fetch_image(url: str) -> Image.Image:
 # ══════════════════════════════════════════════════════════════
 # Gemini API – 스크립트 생성
 # ══════════════════════════════════════════════════════════════
+def _get_best_model(api_key: str) -> str:
+    """사용 가능한 Gemini 모델 중 가장 적합한 것을 자동 선택"""
+    preferred = [
+        "gemini-2.5-flash-preview-04-17",
+        "gemini-2.5-pro-exp-03-25",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-1.0-pro",
+    ]
+    try:
+        client = genai_client.Client(api_key=api_key)
+        available = {m.name.split("/")[-1] for m in client.models.list()}
+        for m in preferred:
+            if m in available:
+                return m
+    except Exception:
+        pass
+    return "gemini-1.5-flash"   # fallback
+
+
 def generate_script(product: dict, api_key: str) -> dict:
     client = genai_client.Client(api_key=api_key)
+    model  = _get_best_model(api_key)
 
     prompt = f"""당신은 쿠팡 파트너스 쇼츠 영상 전문 마케터입니다.
 
@@ -235,7 +256,7 @@ JSON만 출력 (마크다운·백틱 없이):
 }}"""
 
     resp = client.models.generate_content(
-        model="gemini-2.0-flash-lite",
+        model=model,
         contents=prompt,
     )
     raw = resp.text.strip()
