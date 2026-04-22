@@ -207,7 +207,7 @@ def fetch_image(url: str) -> Image.Image:
 def generate_script(product: dict, api_key: str) -> dict:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",          # 무료 티어 지원 모델
+        model_name="gemini-2.0-flash",           # 무료 티어 지원 모델
         generation_config=genai.types.GenerationConfig(
             temperature=0.8,
             max_output_tokens=1500,
