@@ -235,7 +235,7 @@ JSON만 출력 (마크다운·백틱 없이):
 }}"""
 
     resp = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.0-flash-lite",
         contents=prompt,
     )
     raw = resp.text.strip()
