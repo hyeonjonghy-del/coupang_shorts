@@ -9,7 +9,6 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-from google import genai as genai_client
 import asyncio
 import nest_asyncio
 import edge_tts
@@ -202,31 +201,39 @@ def fetch_image(url: str) -> Image.Image:
 
 
 # ══════════════════════════════════════════════════════════════
-# Gemini API – 스크립트 생성
+# Gemini REST API – 스크립트 생성 (SDK 미사용)
 # ══════════════════════════════════════════════════════════════
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
 def _get_best_model(api_key: str) -> str:
-    """사용 가능한 Gemini 모델 중 가장 적합한 것을 자동 선택"""
+    """REST API로 사용 가능한 모델 조회 후 최적 선택"""
     preferred = [
         "gemini-2.5-flash-preview-04-17",
         "gemini-2.5-pro-exp-03-25",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro-latest",
         "gemini-1.5-flash",
         "gemini-1.5-pro",
-        "gemini-1.0-pro",
     ]
     try:
-        client = genai_client.Client(api_key=api_key)
-        available = {m.name.split("/")[-1] for m in client.models.list()}
+        url  = f"{GEMINI_BASE}?key={api_key}"
+        data = requests.get(url, timeout=10).json()
+        available = set()
+        for m in data.get("models", []):
+            name    = m.get("name", "").replace("models/", "")
+            methods = m.get("supportedGenerationMethods", [])
+            if "generateContent" in methods:
+                available.add(name)
         for m in preferred:
             if m in available:
                 return m
     except Exception:
         pass
-    return "gemini-1.5-flash"   # fallback
+    return "gemini-1.5-flash-latest"
 
 
 def generate_script(product: dict, api_key: str) -> dict:
-    client = genai_client.Client(api_key=api_key)
-    model  = _get_best_model(api_key)
+    model = _get_best_model(api_key)
 
     prompt = f"""당신은 쿠팡 파트너스 쇼츠 영상 전문 마케터입니다.
 
@@ -255,12 +262,12 @@ JSON만 출력 (마크다운·백틱 없이):
   ]
 }}"""
 
-    resp = client.models.generate_content(
-        model=model,
-        contents=prompt,
-    )
-    raw = resp.text.strip()
-    # 마크다운 코드블록 제거
+    url  = f"{GEMINI_BASE}/{model}:generateContent?key={api_key}"
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    resp = requests.post(url, json=body, timeout=30)
+    resp.raise_for_status()
+
+    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     raw = re.sub(r"^```json\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
     raw = re.sub(r"^```\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
     return json.loads(raw)
