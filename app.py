@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 import asyncio
 import nest_asyncio
-import edge_tts
+from gtts import gTTS
 import imageio_ffmpeg
 import os, re, io, json, time, textwrap, urllib.request, urllib.parse
 
@@ -288,26 +288,12 @@ JSON만 출력 (마크다운·백틱 없이):
 # ══════════════════════════════════════════════════════════════
 # Edge TTS – 음성 생성
 # ══════════════════════════════════════════════════════════════
-def tts(text: str, path: str, voice: str, rate: str = "+8%") -> None:
-    import threading
-
-    async def _run():
-        communicate = edge_tts.Communicate(text, voice, rate=rate)
-        with open(path, "wb") as f:
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    f.write(chunk["data"])
-
-    def _in_thread():
-        asyncio.run(_run())
-
-    t = threading.Thread(target=_in_thread)
-    t.start()
-    t.join(timeout=60)
-
-    # 파일 유효성 확인
+def tts(text: str, path: str, voice: str = "", rate: str = "+8%") -> None:
+    """gTTS – Google 무료 TTS (한국어)"""
+    tts_obj = gTTS(text=text, lang="ko", slow=False)
+    tts_obj.save(path)
     if not os.path.exists(path) or os.path.getsize(path) < 100:
-        raise RuntimeError(f"TTS 파일 생성 실패 (빈 파일): {path}")
+        raise RuntimeError(f"TTS 파일 생성 실패: {path}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -490,13 +476,8 @@ def main():
 
         st.divider()
 
-        VOICES = {
-            "선희 (여성, 밝고 자연스러움)":  "ko-KR-SunHiNeural",
-            "인준 (남성, 차분함)":            "ko-KR-InJoonNeural",
-            "현수 (남성, 활기참)":            "ko-KR-HyunsuNeural",
-        }
-        voice_label = st.selectbox("🎙️ 나레이션 음성", list(VOICES.keys()))
-        voice = VOICES[voice_label]
+        voice = "ko"   # gTTS 한국어 고정
+        st.info("🎙️ 나레이션: Google 한국어 TTS")
 
         st.divider()
 
