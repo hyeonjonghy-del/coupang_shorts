@@ -296,16 +296,15 @@ def tts(text: str, path: str, voice: str, rate: str = "+8%") -> None:
         await c.save(path)
 
     def _in_thread():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_run())
-        finally:
-            loop.close()
+        asyncio.run(_run())   # asyncio.run() = 새 루프 + Task 컨텍스트 생성
 
     t = threading.Thread(target=_in_thread)
     t.start()
-    t.join(timeout=60)   # 최대 60초 대기
+    t.join(timeout=60)
+
+    # 파일 유효성 확인
+    if not os.path.exists(path) or os.path.getsize(path) < 100:
+        raise RuntimeError(f"TTS 파일 생성 실패 (빈 파일): {path}")
 
 
 # ══════════════════════════════════════════════════════════════
