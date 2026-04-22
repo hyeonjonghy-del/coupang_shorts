@@ -289,15 +289,23 @@ JSON만 출력 (마크다운·백틱 없이):
 # Edge TTS – 음성 생성
 # ══════════════════════════════════════════════════════════════
 def tts(text: str, path: str, voice: str, rate: str = "+8%") -> None:
+    import threading
+
     async def _run():
         c = edge_tts.Communicate(text, voice, rate=rate)
         await c.save(path)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(_run())
-    finally:
-        loop.close()
+
+    def _in_thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_in_thread)
+    t.start()
+    t.join(timeout=60)   # 최대 60초 대기
 
 
 # ══════════════════════════════════════════════════════════════
