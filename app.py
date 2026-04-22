@@ -1,7 +1,7 @@
 """
 🎬 쿠팡 파트너스 쇼츠 자동 생성기
 - 네이버 쇼핑 베스트셀러 크롤링
-- Claude API 스크립트 자동 작성
+- Gemini API 스크립트 자동 작성 (무료)
 - Edge TTS AI 나레이션
 - moviepy 영상 합성 → MP4 다운로드
 """
@@ -9,7 +9,7 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import anthropic
+import google.generativeai as genai
 import asyncio
 import nest_asyncio
 import edge_tts
@@ -152,6 +152,7 @@ def search_naver(query: str, n: int = 12) -> list[dict]:
 
         # ② HTML 파싱 fallback
         if not products:
+            items = []
             for sel in [
                 "div.product_item__MDtDF",
                 "li.product_item",
@@ -201,10 +202,17 @@ def fetch_image(url: str) -> Image.Image:
 
 
 # ══════════════════════════════════════════════════════════════
-# Claude API – 스크립트 생성
+# Gemini API – 스크립트 생성
 # ══════════════════════════════════════════════════════════════
 def generate_script(product: dict, api_key: str) -> dict:
-    client = anthropic.Anthropic(api_key=api_key)
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",          # 무료 티어 지원 모델
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.8,
+            max_output_tokens=1500,
+        ),
+    )
 
     prompt = f"""당신은 쿠팡 파트너스 쇼츠 영상 전문 마케터입니다.
 
@@ -233,13 +241,11 @@ JSON만 출력 (마크다운·백틱 없이):
   ]
 }}"""
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = resp.content[0].text.strip()
+    resp = model.generate_content(prompt)
+    raw = resp.text.strip()
+    # 마크다운 코드블록 제거
     raw = re.sub(r"^```json\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+    raw = re.sub(r"^```\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
     return json.loads(raw)
 
 
@@ -284,7 +290,7 @@ def make_frame(product_img: Image.Image,
     arr = np.array(canvas)
     bg = np.array([18, 18, 28], dtype=np.float32)
     for i in range(fade_rows):
-        alpha = i / fade_rows           # 0→1 (점점 배경색)
+        alpha = i / fade_rows
         row_y = img_h - fade_rows + i
         if 0 <= row_y < H:
             arr[row_y] = (arr[row_y] * (1 - alpha) + bg * alpha).astype(np.uint8)
@@ -412,24 +418,29 @@ def main():
     """, unsafe_allow_html=True)
 
     st.title("🎬 쿠팡 파트너스 쇼츠 자동 생성기")
-    st.caption("베스트셀러 상품 크롤링 → AI 스크립트 → 나레이션 → MP4 완성")
+    st.caption("베스트셀러 상품 크롤링 → AI 스크립트 (Gemini) → 나레이션 → MP4 완성")
 
     # ── 사이드바 ──────────────────────────────────────────────
     with st.sidebar:
         st.header("⚙️ 설정")
 
         # Streamlit Cloud secrets 우선, 없으면 직접 입력
-        _secret_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        _secret_key = st.secrets.get("GEMINI_API_KEY", "")
         if _secret_key:
             api_key = _secret_key
             st.success("🔑 API Key: secrets 적용됨")
         else:
             api_key = st.text_input(
-                "🔑 Claude API Key",
+                "🔑 Gemini API Key",
                 type="password",
-                placeholder="sk-ant-...",
+                placeholder="AIza...",
+                help="Google AI Studio에서 무료 발급: aistudio.google.com",
             )
             st.caption("키는 세션 내에서만 사용되며 저장되지 않습니다")
+            st.markdown(
+                "🆓 [무료 키 발급 →](https://aistudio.google.com/app/apikey)",
+                unsafe_allow_html=False,
+            )
 
         st.divider()
 
@@ -453,7 +464,8 @@ def main():
         st.info("💡 영상 완성 후 설명란에\n파트너스 링크를 넣으면\n구매 발생 시 수익 발생!")
 
     if not api_key:
-        st.warning("👈 왼쪽 사이드바에서 **Claude API Key**를 입력해주세요")
+        st.warning("👈 왼쪽 사이드바에서 **Gemini API Key**를 입력해주세요")
+        st.info("🆓 **무료 발급:** [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) 접속 → Google 로그인 → 'Create API key' 클릭")
         st.stop()
 
     # ══════════════════════════════════════════════════════════
@@ -465,7 +477,6 @@ def main():
     for i, cat in enumerate(CATEGORIES):
         with cat_cols[i % 4]:
             if st.button(cat, use_container_width=True, key=f"cat_{i}"):
-                # 카테고리 바뀌면 하위 상태 초기화
                 for k in ["products", "selected_product", "script",
                           "video_done", "video_path"]:
                     st.session_state.pop(k, None)
@@ -481,7 +492,6 @@ def main():
     # ══════════════════════════════════════════════════════════
     st.subheader("② 인기 상품 선택")
 
-    # 캐시된 결과 없으면 크롤링
     if "products" not in st.session_state:
         q = CATEGORIES[st.session_state["category"]]
         with st.spinner("🔍 네이버 쇼핑에서 인기 상품 검색 중…"):
@@ -563,7 +573,7 @@ def main():
         status = st.empty()
         try:
             # 1. 스크립트
-            status.text("📝 Claude가 스크립트 작성 중…")
+            status.text("📝 Gemini가 스크립트 작성 중…")
             bar.progress(0.05)
             script = generate_script(product, api_key)
             st.session_state["script"] = script
@@ -588,7 +598,7 @@ def main():
             st.rerun()
 
         except json.JSONDecodeError as e:
-            st.error(f"스크립트 JSON 파싱 오류 – Claude 응답을 확인해주세요: {e}")
+            st.error(f"스크립트 JSON 파싱 오류 – Gemini 응답을 확인해주세요: {e}")
         except Exception as e:
             st.error(f"오류 발생: {e}")
             import traceback
@@ -599,7 +609,6 @@ def main():
     if st.session_state.get("video_done"):
         st.success("🎉 쇼츠 영상 완성!")
 
-        # 스크립트 보기
         if "script" in st.session_state:
             scr = st.session_state["script"]
             with st.expander("📋 생성된 스크립트 보기"):
@@ -609,7 +618,6 @@ def main():
                     st.markdown(f"**[{s['id']}]** {s['text']}")
                     st.caption(f"자막: {s['subtitle']}")
 
-        # 영상 미리보기 + 다운로드
         vp = st.session_state.get("video_path", "")
         if vp and os.path.exists(vp):
             st.video(vp)
@@ -624,7 +632,6 @@ def main():
                 use_container_width=True,
             )
 
-        # 파트너스 링크 안내
         if partner_link:
             st.markdown("---")
             st.markdown("**📌 유튜브 영상 설명란에 넣을 내용 (복사하세요):**")
