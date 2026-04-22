@@ -210,26 +210,38 @@ def _get_best_model(api_key: str) -> str:
     preferred = [
         "gemini-2.5-flash-preview-04-17",
         "gemini-2.5-pro-exp-03-25",
+        "gemini-2.5-pro-preview-03-25",
+        "gemini-1.5-flash-002",
+        "gemini-1.5-flash-001",
+        "gemini-1.5-pro-002",
+        "gemini-1.5-pro-001",
         "gemini-1.5-flash-latest",
-        "gemini-1.5-pro-latest",
         "gemini-1.5-flash",
         "gemini-1.5-pro",
     ]
     try:
         url  = f"{GEMINI_BASE}?key={api_key}"
         data = requests.get(url, timeout=10).json()
-        available = set()
+        available = []
         for m in data.get("models", []):
             name    = m.get("name", "").replace("models/", "")
             methods = m.get("supportedGenerationMethods", [])
             if "generateContent" in methods:
-                available.add(name)
-        for m in preferred:
-            if m in available:
-                return m
+                available.append(name)
+
+        if available:
+            # preferred 순서로 있으면 그걸 쓰고
+            available_set = set(available)
+            for p in preferred:
+                if p in available_set:
+                    return p
+            # preferred에 없으면 목록의 첫 번째 사용
+            return available[0]
     except Exception:
         pass
-    return "gemini-1.5-flash-latest"
+
+    # 목록 조회 자체 실패 시 순서대로 시도
+    return preferred[0]
 
 
 def generate_script(product: dict, api_key: str) -> dict:
@@ -489,7 +501,9 @@ def main():
             with st.spinner("모델 목록 조회 중..."):
                 try:
                     url  = f"{GEMINI_BASE}?key={api_key}"
-                    data = requests.get(url, timeout=10).json()
+                    resp = requests.get(url, timeout=10)
+                    st.caption(f"HTTP 상태: {resp.status_code}")
+                    data = resp.json()
                     names = []
                     for m in data.get("models", []):
                         name    = m.get("name", "").replace("models/", "")
@@ -501,10 +515,13 @@ def main():
                         for n in names:
                             st.code(n)
                     else:
-                        st.warning("모델 없음")
+                        st.warning("generateContent 지원 모델 없음")
                         st.json(data)
                 except Exception as e:
-                    st.error(f"오류: {e}")
+                    st.error(f"조회 오류: {e}")
+
+        st.divider()
+        st.info("💡 영상 완성 후 설명란에\n파트너스 링크를 넣으면\n구매 발생 시 수익 발생!")
 
 
 
