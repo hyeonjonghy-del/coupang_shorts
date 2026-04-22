@@ -9,7 +9,7 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import google.generativeai as genai
+from google import genai as genai_client
 import asyncio
 import nest_asyncio
 import edge_tts
@@ -205,14 +205,7 @@ def fetch_image(url: str) -> Image.Image:
 # Gemini API – 스크립트 생성
 # ══════════════════════════════════════════════════════════════
 def generate_script(product: dict, api_key: str) -> dict:
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash-8b",        # 무료 티어 지원 (소형 모델)
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.8,
-            max_output_tokens=1500,
-        ),
-    )
+    client = genai_client.Client(api_key=api_key)
 
     prompt = f"""당신은 쿠팡 파트너스 쇼츠 영상 전문 마케터입니다.
 
@@ -241,7 +234,10 @@ JSON만 출력 (마크다운·백틱 없이):
   ]
 }}"""
 
-    resp = model.generate_content(prompt)
+    resp = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+    )
     raw = resp.text.strip()
     # 마크다운 코드블록 제거
     raw = re.sub(r"^```json\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
