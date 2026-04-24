@@ -1,436 +1,312 @@
-"""
-🎬 쿠팡 파트너스 쇼츠 자동 생성기 v2
-- 네이버 쇼핑 크롤링 or 수동 입력
-- Gemini API 스크립트 자동 작성
-- edge-tts 자연스러운 한국어 나레이션 (fallback: gTTS)
-- 제품 이미지 업로드 + Ken Burns 줌 효과
-- moviepy MP4 다운로드
-"""
-
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-import subprocess, asyncio, nest_asyncio
-import imageio_ffmpeg
-import os, re, io, json, time, textwrap, urllib.parse
+import google.generativeai as genai
+import json
+import re
+from datetime import datetime
 
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-from moviepy.editor import VideoClip, AudioFileClip, concatenate_videoclips
+st.set_page_config(
+    page_title="역사 쇼츠 메이커",
+    page_icon="🎬",
+    layout="wide"
+)
 
-os.environ["IMAGEIO_FFMPEG_EXE"] = imageio_ffmpeg.get_ffmpeg_exe()
-nest_asyncio.apply()
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700;900&display=swap');
+html, body, [class*="css"] { font-family: 'Noto Sans KR', sans-serif; }
 
-VIDEO_W, VIDEO_H = 720, 1280
-FPS = 24
-
-CATEGORIES = {
-    "🏠 생활/주방": "주방용품 생활용품 인기",
-    "💄 뷰티/화장품": "화장품 스킨케어 인기",
-    "🍎 식품/건강": "건강식품 영양제 인기",
-    "📱 전자/가전": "전자제품 가전 인기",
-    "⚽ 스포츠/레저": "스포츠용품 운동 인기",
-    "🐾 반려동물": "반려동물 강아지 고양이 인기",
-    "👶 유아동": "유아용품 아기 인기",
-    "👗 패션/의류": "의류 패션 베스트",
+.hero-title {
+    font-size: 2.4rem; font-weight: 900;
+    background: linear-gradient(135deg, #ff6b35, #f7c59f, #fffbe6);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 0.2rem;
 }
+.hero-sub { color: #888; font-size: 0.95rem; margin-bottom: 2rem; }
 
-ACCENT_COLORS = {
-    "hook":     (255, 70,  70),
-    "feature1": (65,  140, 255),
-    "feature2": (60,  210, 130),
-    "feature3": (255, 200, 60),
-    "price":    (185, 100, 255),
-    "cta":      (255, 120, 50),
+.scene-card {
+    background: #13131f; border: 1px solid #2a2a3f;
+    border-left: 3px solid #ff6b35; border-radius: 8px;
+    padding: 1rem 1.2rem; margin-bottom: 0.8rem;
 }
+.scene-num { color: #ff6b35; font-weight: 700; font-size: 0.8rem; letter-spacing: 0.1em; }
+.scene-text { font-size: 1rem; color: #e8e8f0; margin: 0.3rem 0; line-height: 1.6; }
+.scene-img { color: #888; font-size: 0.82rem; }
+.scene-dur { color: #f7c59f; font-size: 0.8rem; font-weight: 700; }
 
-SECTION_BADGE = {
-    "hook":     "🔥 지금 인기",
-    "feature1": "✅ 포인트 1",
-    "feature2": "✅ 포인트 2",
-    "feature3": "✅ 포인트 3",
-    "price":    "💰 가격 정보",
-    "cta":      "🛒 구매 안내",
+.narr-box {
+    background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+    padding: 1.2rem; font-size: 0.95rem; line-height: 1.9;
+    color: #c9d1d9; white-space: pre-wrap;
 }
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "ko-KR,ko;q=0.9",
+.tag-pill {
+    display: inline-block; background: #1a1a2e; border: 1px solid #2a2a4a;
+    border-radius: 20px; padding: 0.25rem 0.7rem;
+    font-size: 0.8rem; color: #9090c0; margin: 0.15rem;
 }
-
-VOICES = {
-    "선희 (여성, 밝고 자연스러움)": "ko-KR-SunHiNeural",
-    "인준 (남성, 차분함)":          "ko-KR-InJoonNeural",
-    "현수 (남성, 활기참)":          "ko-KR-HyunsuNeural",
+.stat-box {
+    background: #13131f; border: 1px solid #2a2a3f;
+    border-radius: 8px; padding: 0.8rem 1rem; text-align: center;
 }
+.stat-val { font-size: 1.6rem; font-weight: 900; color: #ff6b35; }
+.stat-label { font-size: 0.75rem; color: #666; }
 
-# ── 폰트 ──────────────────────────────────────────────────────
-@st.cache_resource
-def _load_font_path():
-    for p in [
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJKkr-Bold.otf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-        "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
-        "C:/Windows/Fonts/malgun.ttf",
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-    ]:
-        if os.path.exists(p):
-            return p
-    return None
+.vrew-box {
+    background: #0f2027; border: 2px solid #1a6b5a;
+    border-radius: 10px; padding: 1.2rem; margin: 1rem 0;
+}
+.vrew-title { color: #2ecc71; font-weight: 700; font-size: 1rem; margin-bottom: 0.5rem; }
+.free-badge {
+    display: inline-block; background: #2ecc71; color: #000;
+    font-size: 0.7rem; font-weight: 900; padding: 0.1rem 0.5rem;
+    border-radius: 20px; margin-left: 0.5rem; vertical-align: middle;
+}
+</style>
+""", unsafe_allow_html=True)
 
-def get_font(size):
-    fp = _load_font_path()
-    if fp:
-        try: return ImageFont.truetype(fp, size)
-        except: pass
-    return ImageFont.load_default()
+# ─── 추천 주제 ────────────────────────────────────────────
+SUGGESTED_TOPICS = [
+    ("💰 조선이 망한 진짜 이유는 '돈'이었다", "조선 경제 붕괴와 현대 경제 위기 비교"),
+    ("🌷 튤립 버블 — 400년 전 코인 폭락과 똑같다", "17세기 네덜란드 튤립 투기와 현대 암호화폐"),
+    ("🏯 임진왜란이 일본을 부자로 만든 이유", "도자기 기술 약탈과 산업화의 관계"),
+    ("🗺️ 신라가 사막 나라와 교역한 방법", "실크로드와 신라의 국제 무역"),
+    ("⚔️ 로마가 멸망한 진짜 원인은 세금이었다", "세금 과부담과 제국 붕괴의 경제학"),
+    ("🏦 조선 화폐 개혁이 실패한 이유", "상평통보와 현대 화폐 정책 비교"),
+    ("🚢 대항해시대가 만든 최초의 글로벌 경제", "콜럼버스 이후 세계 무역 구조 변화"),
+    ("📉 대공황 — 1929년과 2008년은 왜 똑같이 반복됐나", "역사 속 금융위기 패턴 분석"),
+    ("🛢️ 석유 패권 — 중동이 부자가 된 진짜 이유", "1973년 오일쇼크와 현재 에너지 전쟁"),
+    ("🏗️ 일제강점기 조선 경제는 성장했나 수탈당했나", "식민지 근대화론 vs 수탈론"),
+]
 
-# ── 네이버 쇼핑 크롤링 ───────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner=False)
-def search_naver(query, n=12):
-    enc = urllib.parse.quote(query)
-    url = f"https://search.shopping.naver.com/search/all?query={enc}&sort=review&pagingSize={n}"
+# ─── API 키 로드 ──────────────────────────────────────────
+def get_api_key():
     try:
-        soup = BeautifulSoup(requests.get(url, headers=HEADERS, timeout=15).text, "html.parser")
-        products = []
-        tag = soup.find("script", {"id": "__NEXT_DATA__"})
-        if tag:
-            try:
-                items = (json.loads(tag.string).get("props",{}).get("pageProps",{})
-                         .get("initialState",{}).get("products",{}).get("list",[]))
-                for it in items[:n]:
-                    d = it.get("item", it)
-                    name  = d.get("productTitle") or d.get("name","")
-                    price = d.get("price") or d.get("lprice", 0)
-                    img   = d.get("imageUrl") or d.get("image","")
-                    rev   = d.get("reviewCount","")
-                    if img.startswith("//"): img = "https:" + img
-                    if name:
-                        products.append({
-                            "name": str(name)[:55],
-                            "price": f"{int(price):,}원" if isinstance(price,(int,float)) and price else str(price),
-                            "image_url": img,
-                            "review_count": str(rev) if rev else "",
-                        })
-            except: pass
-        return [p for p in products if p.get("name")]
-    except:
-        return []
-
-# ── Gemini REST API ───────────────────────────────────────────
-GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-
-def _get_best_model(api_key):
-    preferred = [
-        "gemini-2.5-flash-preview-04-17",
-        "gemini-2.5-pro-exp-03-25",
-        "gemini-1.5-flash-002", "gemini-1.5-flash-001",
-        "gemini-1.5-pro-002",   "gemini-1.5-pro-001",
-    ]
-    try:
-        data = requests.get(f"{GEMINI_BASE}?key={api_key}", timeout=10).json()
-        available = [m["name"].replace("models/","")
-                     for m in data.get("models",[])
-                     if "generateContent" in m.get("supportedGenerationMethods",[])]
-        avset = set(available)
-        for p in preferred:
-            if p in avset: return p
-        if available: return available[0]
-    except: pass
-    return preferred[0]
-
-def generate_script(product, api_key):
-    model = _get_best_model(api_key)
-    prompt = f"""당신은 쿠팡 파트너스 쇼츠 영상 전문 마케터입니다.
-
-제품 정보:
-- 제품명: {product['name']}
-- 가격: {product.get('price','미상')}
-- 리뷰 수: {product.get('review_count','다수')}
-
-30~40초 분량 쇼츠 스크립트를 작성하세요.
-조건:
-- 각 섹션 나레이션은 4~7초 분량 (약 50~90자 한국어 구어체)
-- hook은 궁금증·놀라움 유발, feature는 구체적 혜택 중심
-- cta는 "설명란 링크 클릭" 유도
-- subtitle은 20자 이내 핵심 자막
-
-JSON만 출력 (마크다운·백틱 없이):
-{{
-  "title": "유튜브 영상 제목 50자 이내",
-  "sections": [
-    {{"id":"hook",     "text":"나레이션", "subtitle":"자막"}},
-    {{"id":"feature1", "text":"나레이션", "subtitle":"자막"}},
-    {{"id":"feature2", "text":"나레이션", "subtitle":"자막"}},
-    {{"id":"feature3", "text":"나레이션", "subtitle":"자막"}},
-    {{"id":"price",    "text":"나레이션", "subtitle":"자막"}},
-    {{"id":"cta",      "text":"나레이션", "subtitle":"자막"}}
-  ]
-}}"""
-    resp = requests.post(f"{GEMINI_BASE}/{model}:generateContent?key={api_key}",
-                         json={"contents":[{"parts":[{"text":prompt}]}]}, timeout=30)
-    resp.raise_for_status()
-    raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    raw = re.sub(r"^```json\s*|\s*```$","",raw,flags=re.MULTILINE).strip()
-    raw = re.sub(r"^```\s*|\s*```$","",raw,flags=re.MULTILINE).strip()
-    return json.loads(raw)
-
-# ── TTS (edge-tts CLI → gTTS fallback) ───────────────────────
-def tts(text, path, voice="ko-KR-SunHiNeural", rate="+8%"):
-    try:
-        r = subprocess.run(
-            ["edge-tts","--voice",voice,"--rate",rate,"--text",text,"--write-media",path],
-            capture_output=True, timeout=45)
-        if r.returncode == 0 and os.path.exists(path) and os.path.getsize(path) > 100:
-            return
+        return st.secrets["GEMINI_API_KEY"]
     except Exception:
-        pass
-    # fallback
-    from gtts import gTTS
-    gTTS(text=text, lang="ko", slow=False).save(path)
-    if not os.path.exists(path) or os.path.getsize(path) < 100:
-        raise RuntimeError(f"TTS 생성 실패: {path}")
+        return None
 
-# ── Ken Burns 프레임 함수 ─────────────────────────────────────
-def make_frame_func(product_img, subtitle, section_id, duration):
-    W, H   = VIDEO_W, VIDEO_H
-    img_h  = int(H * 0.62)
-    color  = ACCENT_COLORS.get(section_id, (65,140,255))
-    badge  = SECTION_BADGE.get(section_id,"")
+# ─── 헤더 ─────────────────────────────────────────────────
+st.markdown('<div class="hero-title">🎬 역사 쇼츠 메이커</div>', unsafe_allow_html=True)
+st.markdown('<div class="hero-sub">역사 + 경제 연결 콘텐츠 · 1분 쇼츠 자동 생성 · Powered by Gemini (무료)</div>', unsafe_allow_html=True)
 
-    # 최대 줌 기준으로 이미지 미리 크게 리사이즈
-    ow, oh   = product_img.size
-    base_sc  = max(W/ow, img_h/oh) * 1.15
-    rw, rh   = int(ow*base_sc), int(oh*base_sc)
-    big      = product_img.resize((rw,rh), Image.LANCZOS)
+api_key = get_api_key()
+if not api_key:
+    st.error("⚠️ GEMINI_API_KEY가 설정되지 않았습니다. Streamlit Cloud Secrets에 API 키를 입력해주세요.")
+    with st.expander("🔑 Gemini API 키 무료 발급 방법"):
+        st.markdown("""
+1. **https://aistudio.google.com** 접속 (구글 계정 로그인)
+2. **`Get API key`** 클릭
+3. **`Create API key`** 클릭
+4. 생성된 키 복사 (`AIza...` 형태)
+5. Streamlit Cloud → Settings → Secrets 에 아래 형식으로 입력:
+```toml
+GEMINI_API_KEY = "AIza..."
+```
+> ✅ 완전 무료! 크레딧 충전 불필요
+        """)
+    st.stop()
 
-    f_sub = get_font(58); f_bdg = get_font(30); f_cta = get_font(32)
-    lines = textwrap.wrap(subtitle, width=13)
+# ─── 입력 섹션 ────────────────────────────────────────────
+col_left, col_right = st.columns([1.2, 1], gap="large")
 
-    def make(t):
-        prog   = t / max(duration, 0.01)
-        zoom   = 1.0 + 0.12 * prog          # 1.0→1.12 줌인
-        cw, ch = int(W/zoom), int(img_h/zoom)
-        left   = (rw-cw)//2; top = (rh-ch)//2
-        crop   = big.crop((left,top,left+cw,top+ch)).resize((W,img_h),Image.LANCZOS)
+with col_left:
+    st.markdown("#### ✏️ 주제 설정")
+    topic_mode = st.radio("입력 방식", ["추천 주제 선택", "직접 입력"], horizontal=True)
 
-        canvas = Image.new("RGB",(W,H),(18,18,28))
-        canvas.paste(crop,(0,0))
+    if topic_mode == "추천 주제 선택":
+        selected = st.selectbox(
+            "주제 선택",
+            options=range(len(SUGGESTED_TOPICS)),
+            format_func=lambda i: SUGGESTED_TOPICS[i][0],
+        )
+        topic = SUGGESTED_TOPICS[selected][0]
+        topic_hint = SUGGESTED_TOPICS[selected][1]
+        st.caption(f"💡 {topic_hint}")
+    else:
+        topic = st.text_input("주제를 직접 입력하세요", placeholder="예: 고려청자가 세계 최고가 된 경제적 이유")
+        topic_hint = ""
 
-        # 페이드
-        arr = np.array(canvas); bg = np.array([18,18,28],dtype=np.float32)
-        fade = 180
-        for i in range(fade):
-            ry = img_h-fade+i
-            if 0<=ry<H:
-                arr[ry] = (arr[ry]*(1-i/fade)+bg*(i/fade)).astype(np.uint8)
-        canvas = Image.fromarray(arr)
-        draw   = ImageDraw.Draw(canvas)
+    target = st.selectbox("타겟 시청자", ["일반 대중 (쉽고 흥미롭게)", "경제·투자 관심층 (심층 분석)", "역사 마니아 (전문적 서술)"])
+    duration = st.select_slider("영상 길이", options=["45초", "60초", "75초", "90초"], value="60초")
+    tone = st.selectbox("나레이션 톤", ["드라마틱·몰입감 있게", "차분·다큐 스타일", "친근·대화체"])
 
-        draw.rectangle([36,img_h+6,W-36,img_h+11], fill=color)
-        if badge: draw.text((36,img_h+18), badge, fill=color, font=f_bdg)
+with col_right:
+    st.markdown("#### 📋 생성 옵션")
+    gen_script = st.checkbox("📝 장면별 스크립트", value=True)
+    gen_narration = st.checkbox("🎙️ 나레이션 전문 (Vrew용)", value=True)
+    gen_tags = st.checkbox("#️⃣ 해시태그", value=True)
+    gen_title = st.checkbox("📌 제목 후보 3개", value=True)
 
-        ty = img_h+65
-        for line in lines[:3]:
-            bb = draw.textbbox((0,0),line,font=f_sub)
-            tx = (W-(bb[2]-bb[0]))//2
-            draw.text((tx+3,ty+3),line,fill=(0,0,0),font=f_sub)
-            draw.text((tx,ty),line,fill=(255,255,255),font=f_sub)
-            ty += 70
+    st.markdown("---")
+    st.markdown("#### 🆓 무료 제작 워크플로우")
+    st.markdown("""
+<div class="vrew-box">
+<div class="vrew-title">📋 Vrew 활용법 <span class="free-badge">완전 무료</span></div>
 
-        bar_y = H-100
-        draw.rectangle([0,bar_y,W,H],fill=(20,20,34))
-        cta = "👇 설명란 쿠팡 링크 클릭!"
-        cb  = draw.textbbox((0,0),cta,font=f_cta)
-        draw.text(((W-(cb[2]-cb[0]))//2, bar_y+30), cta, fill=color, font=f_cta)
+1. 여기서 스크립트 생성<br>
+2. <b>나레이션 전문</b> 복사<br>
+3. <a href="https://vrew.ai" target="_blank">vrew.ai</a> → 새 프로젝트<br>
+4. <b>텍스트로 비디오 만들기</b> 선택<br>
+5. 스크립트 붙여넣기 → AI 음성 선택<br>
+6. 자동으로 이미지+자막+음성 완성!<br>
+7. 유튜브 업로드 🚀
+</div>
+""", unsafe_allow_html=True)
 
-        return np.array(canvas)
-    return make
+st.markdown("---")
+generate_btn = st.button("🚀 쇼츠 콘텐츠 생성하기", type="primary", use_container_width=True)
 
-# ── 영상 합성 ─────────────────────────────────────────────────
-def build_video(product, script, product_img, voice, output_path, on_progress=None):
-    clips, tmps = [], []
-    sections    = script["sections"]
-    for i, sec in enumerate(sections):
-        if on_progress:
-            on_progress(0.10+0.75*(i/len(sections)),
-                        f"섹션 {i+1}/{len(sections)}: '{sec['subtitle']}' 생성 중…")
-        ap = f"/tmp/_tts_{i}_{int(time.time()*1000)}.mp3"
-        tmps.append(ap)
-        tts(sec["text"], ap, voice)
-        audio = AudioFileClip(ap)
-        dur   = audio.duration + 0.4
-        clip  = VideoClip(make_frame_func(product_img,sec["subtitle"],sec["id"],dur),
-                          duration=dur).set_fps(FPS).set_audio(audio)
-        clips.append(clip)
+# ─── 생성 로직 ────────────────────────────────────────────
+if generate_btn and topic:
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-1.5-flash")
 
-    if on_progress: on_progress(0.88,"클립 합치는 중…")
-    final = concatenate_videoclips(clips, method="compose")
-    if on_progress: on_progress(0.92,"MP4 인코딩 중…")
-    final.write_videofile(output_path, fps=FPS, codec="libx264", audio_codec="aac",
-                          temp_audiofile="/tmp/_fa.m4a", remove_temp=True,
-                          logger=None, threads=2, preset="ultrafast")
-    final.close()
-    for c in clips: c.close()
-    for f in tmps:
-        try: os.remove(f)
-        except: pass
+    sec_map = {"45초": 45, "60초": 60, "75초": 75, "90초": 90}
+    secs = sec_map[duration]
+    scene_count = secs // 10
 
-# ── Streamlit UI ──────────────────────────────────────────────
-def main():
-    st.set_page_config(page_title="쿠팡 파트너스 쇼츠 생성기", page_icon="🎬", layout="wide")
-    st.markdown("<style>.stButton>button{border-radius:10px;font-weight:bold;}</style>",
-                unsafe_allow_html=True)
-    st.title("🎬 쿠팡 파트너스 쇼츠 자동 생성기")
-    st.caption("제품 이미지 업로드 → AI 스크립트 → 자연스러운 나레이션 → MP4")
+    prompt = f"""당신은 한국 유튜브 역사 쇼츠 콘텐츠 전문 작가입니다.
+역사와 경제·투자를 연결하는 차별화된 콘텐츠를 만드세요.
 
-    with st.sidebar:
-        st.header("⚙️ 설정")
-        _s = st.secrets.get("GEMINI_API_KEY","")
-        if _s:
-            api_key = _s; st.success("🔑 secrets 적용됨")
-        else:
-            api_key = st.text_input("🔑 Gemini API Key", type="password", placeholder="AIza...")
-        st.divider()
-        voice_label = st.selectbox("🎙️ 나레이션 음성", list(VOICES.keys()))
-        voice = VOICES[voice_label]
-        st.divider()
-        partner_link = st.text_input("🔗 쿠팡 파트너스 링크 (선택)",
-                                     placeholder="https://link.coupang.com/...")
-        st.divider()
-        st.info("💡 영상 완성 후 설명란에\n파트너스 링크를 넣으면\n구매 시 수익 발생!")
+주제: {topic}
+타겟: {target}
+영상 길이: {duration} (총 {secs}초, {scene_count}개 장면)
+나레이션 톤: {tone}
 
-    if not api_key:
-        st.warning("👈 Gemini API Key를 입력해주세요"); st.stop()
+반드시 아래 JSON 형식으로만 응답하세요 (마크다운 코드블록 없이 순수 JSON만):
+{{
+  "title_candidates": ["제목1", "제목2", "제목3"],
+  "hook": "첫 3초 후킹 문장 (시청자가 멈추게 만드는 강렬한 한 줄)",
+  "scenes": [
+    {{
+      "scene_no": 1,
+      "duration_sec": 10,
+      "narration": "나레이션 텍스트",
+      "subtitle": "화면 자막 (10자 이내)",
+      "image_keyword_ko": "이미지 검색어(한국어)",
+      "image_keyword_en": "image search keyword in English"
+    }}
+  ],
+  "full_narration": "전체 나레이션 하나의 흐름으로 (Vrew에 바로 붙여넣을 수 있게)",
+  "vrew_keywords": "Vrew 키워드 검색용 핵심단어 3~5개 (쉼표 구분)",
+  "hashtags": ["태그1","태그2","태그3","태그4","태그5","태그6","태그7","태그8","태그9","태그10"],
+  "production_tips": "Vrew로 이 영상 만들 때 추천 배경 스타일 또는 주의사항"
+}}"""
 
-    # ① 카테고리
-    st.subheader("① 카테고리 선택")
-    cols = st.columns(4)
-    for i, cat in enumerate(CATEGORIES):
-        with cols[i%4]:
-            if st.button(cat, use_container_width=True, key=f"cat_{i}"):
-                for k in ["products","selected_product","script","video_done","video_path"]:
-                    st.session_state.pop(k,None)
-                st.session_state["category"] = cat
-    if "category" not in st.session_state: st.stop()
-    st.success(f"선택: **{st.session_state['category']}**")
-
-    # ② 상품 + 이미지
-    st.subheader("② 상품 정보 & 제품 이미지")
-    if "products" not in st.session_state:
-        q = CATEGORIES[st.session_state["category"]]
-        with st.spinner("🔍 네이버 쇼핑 검색 중…"):
-            st.session_state["products"] = search_naver(q)
-
-    products = st.session_state.get("products",[])
-    col_info, col_img = st.columns([3,2])
-
-    with col_info:
-        if not products:
-            st.warning("⚠️ 자동 검색 실패 – 직접 입력")
-            with st.form("mf"):
-                mn = st.text_input("제품명 *")
-                mp = st.text_input("가격")
-                mr = st.text_input("리뷰 수")
-                if st.form_submit_button("선택", type="primary") and mn:
-                    st.session_state["selected_product"] = {
-                        "name":mn,"price":mp,"image_url":"","review_count":mr}
-                    for k in ["script","video_done","video_path"]: st.session_state.pop(k,None)
-        else:
-            st.write(f"✅ **{len(products)}개** 인기 상품")
-            labels = [f"{p['name'][:35]}  ({p['price']})" + (f"  ⭐{p['review_count']}" if p.get("review_count") else "") for p in products]
-            idx = st.selectbox("상품 선택", range(len(products)), format_func=lambda x:labels[x])
-            sel = products[idx]
-            st.markdown(f"**📦** {sel['name']}  \n**💰** {sel['price']}")
-            if st.button("🎬 이 상품으로 진행", type="primary", use_container_width=True):
-                st.session_state["selected_product"] = sel
-                for k in ["script","video_done","video_path"]: st.session_state.pop(k,None)
-
-    with col_img:
-        st.markdown("**📸 제품 이미지 업로드**")
-        st.caption("쿠팡/네이버 상품 이미지를 저장해서 올려주세요")
-        uploaded = st.file_uploader("이미지", type=["jpg","jpeg","png","webp"],
-                                    label_visibility="collapsed")
-        if uploaded:
-            st.session_state["uploaded_img"] = uploaded.read()
-        if "uploaded_img" in st.session_state:
-            st.image(st.session_state["uploaded_img"], use_column_width=True)
-
-    if "selected_product" not in st.session_state: st.stop()
-
-    # ③ 영상 생성
-    product = st.session_state["selected_product"]
-    st.subheader("③ 쇼츠 영상 생성")
-    st.info(f"🛍️ **{product['name']}**")
-    if "uploaded_img" not in st.session_state:
-        st.warning("⬆️ 위에서 제품 이미지를 업로드해주세요!")
-
-    cg, cb = st.columns(2)
-    with cg:
-        go = st.button("🚀 영상 생성 시작", type="primary", use_container_width=True,
-                       disabled=st.session_state.get("video_done",False))
-    with cb:
-        if st.button("↩️ 다시 선택", use_container_width=True):
-            for k in ["selected_product","script","video_done","video_path"]:
-                st.session_state.pop(k,None)
-            st.rerun()
-
-    if go and not st.session_state.get("video_done"):
-        bar = st.progress(0.0); status = st.empty()
+    with st.spinner("🎬 Gemini가 콘텐츠를 생성하는 중..."):
         try:
-            status.text("📝 Gemini 스크립트 작성 중…"); bar.progress(0.05)
-            script = generate_script(product, api_key)
-            st.session_state["script"] = script
+            response = model.generate_content(prompt)
+            raw = response.text.strip()
+            raw_clean = re.sub(r'^```json\s*|^```\s*|```$', '', raw, flags=re.MULTILINE).strip()
+            data = json.loads(raw_clean)
 
-            status.text("🖼️ 이미지 준비 중…"); bar.progress(0.10)
-            if "uploaded_img" in st.session_state:
-                pimg = Image.open(io.BytesIO(st.session_state["uploaded_img"])).convert("RGB")
-            else:
-                pimg = Image.new("RGB",(720,720),(30,30,50))
+            st.success("✅ 생성 완료!")
+            st.markdown("---")
 
-            out = f"/tmp/shorts_{int(time.time())}.mp4"
-            build_video(product, script, pimg, voice, out,
-                        lambda pct,msg: (bar.progress(pct), status.text(f"🎬 {msg}")))
-            bar.progress(1.0); status.text("✅ 완성!")
-            st.session_state.update({"video_path":out,"video_done":True})
-            st.rerun()
+            # 제목 후보
+            if gen_title and "title_candidates" in data:
+                st.markdown("### 📌 제목 후보")
+                for i, t in enumerate(data["title_candidates"], 1):
+                    st.markdown(f"**{i}.** {t}")
+
+            # 후킹 문장
+            if "hook" in data:
+                st.markdown("### ⚡ 오프닝 후킹")
+                st.markdown(f"> **{data['hook']}**")
+
+            # 통계
+            if "scenes" in data:
+                c1, c2, c3, c4 = st.columns(4)
+                total_sec = sum(s.get("duration_sec", 10) for s in data["scenes"])
+                narr_len = len(data.get("full_narration", ""))
+                for col, val, label in zip(
+                    [c1, c2, c3, c4],
+                    [len(data["scenes"]), f"{total_sec}s", narr_len, len(data.get("hashtags", []))],
+                    ["장면 수", "총 길이", "나레이션 글자 수", "해시태그"]
+                ):
+                    with col:
+                        st.markdown(f'<div class="stat-box"><div class="stat-val">{val}</div><div class="stat-label">{label}</div></div>', unsafe_allow_html=True)
+                st.markdown("")
+
+            # 장면별 스크립트
+            if gen_script and "scenes" in data:
+                st.markdown("### 🎬 장면별 스크립트")
+                for scene in data["scenes"]:
+                    img_en = scene.get("image_keyword_en", "")
+                    pexels_url = f"https://www.pexels.com/search/{img_en.replace(' ', '%20')}/" if img_en else ""
+                    img_line = f'🔍 {scene.get("image_keyword_ko","")} | <a href="{pexels_url}" target="_blank">Pexels 검색 →</a>' if pexels_url else f'🔍 {scene.get("image_keyword_ko","")}'
+                    st.markdown(f"""
+<div class="scene-card">
+  <div class="scene-num">SCENE {scene.get('scene_no','')} &nbsp;·&nbsp; <span class="scene-dur">⏱ {scene.get('duration_sec',10)}초</span></div>
+  <div class="scene-text">🎙️ {scene.get('narration','')}</div>
+  <div class="scene-text" style="color:#f7c59f;font-size:0.9rem;">📺 자막: <strong>{scene.get('subtitle','')}</strong></div>
+  <div class="scene-img">{img_line}</div>
+</div>""", unsafe_allow_html=True)
+
+            # 나레이션 전문 (Vrew용)
+            if gen_narration and "full_narration" in data:
+                st.markdown("### 🎙️ 나레이션 전문")
+                st.markdown("""
+<div class="vrew-box">
+<div class="vrew-title">📋 Vrew 사용법</div>
+① 아래 텍스트 전체 복사 → ② vrew.ai 접속 → ③ <b>텍스트로 비디오 만들기</b> → ④ 붙여넣기 → ⑤ AI 음성 선택 → 완성!
+</div>
+""", unsafe_allow_html=True)
+                st.markdown('<div class="narr-box">' + data["full_narration"] + '</div>', unsafe_allow_html=True)
+                st.code(data["full_narration"], language=None)
+
+            # Vrew 키워드
+            if "vrew_keywords" in data:
+                st.markdown("### 🔍 Vrew 이미지 검색 키워드")
+                st.info(f"**{data['vrew_keywords']}**\n\nVrew 편집기에서 이 키워드로 배경 이미지를 검색하세요!")
+
+            # 해시태그
+            if gen_tags and "hashtags" in data:
+                st.markdown("### #️⃣ 해시태그")
+                tags_html = " ".join([f'<span class="tag-pill">#{t}</span>' for t in data["hashtags"]])
+                st.markdown(tags_html, unsafe_allow_html=True)
+                st.code(" ".join([f"#{t}" for t in data["hashtags"]]), language=None)
+
+            # 제작 팁
+            if "production_tips" in data:
+                st.markdown("### 💡 Vrew 제작 팁")
+                st.info(data["production_tips"])
+
+            # JSON 저장
+            st.markdown("---")
+            now = datetime.now().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "💾 전체 데이터 저장 (JSON)",
+                data=json.dumps(data, ensure_ascii=False, indent=2),
+                file_name=f"shorts_{now}.json",
+                mime="application/json"
+            )
+
         except json.JSONDecodeError as e:
-            st.error(f"스크립트 JSON 오류: {e}")
+            st.error(f"JSON 파싱 오류: {e}")
+            st.code(raw)
         except Exception as e:
             st.error(f"오류: {e}")
-            import traceback
-            with st.expander("상세 오류"): st.code(traceback.format_exc())
 
-    if st.session_state.get("video_done"):
-        st.success("🎉 쇼츠 영상 완성!")
-        scr = st.session_state.get("script",{})
-        with st.expander("📋 스크립트 보기"):
-            st.markdown(f"**📌** {scr.get('title','')}")
-            for s in scr.get("sections",[]):
-                st.markdown(f"**[{s['id']}]** {s['text']}")
-                st.caption(f"자막: {s['subtitle']}")
+elif generate_btn and not topic:
+    st.warning("주제를 입력해주세요!")
 
-        vp = st.session_state.get("video_path","")
-        if vp and os.path.exists(vp):
-            st.video(vp)
-            with open(vp,"rb") as f: vb = f.read()
-            st.download_button("⬇️ MP4 다운로드", data=vb,
-                               file_name=re.sub(r"[^\w가-힣]","_",product["name"][:20])+".mp4",
-                               mime="video/mp4", use_container_width=True)
-        if partner_link:
-            st.markdown("---\n**📌 유튜브 설명란 내용:**")
-            st.code(f"{scr.get('title',product['name'])}\n\n쿠팡에서 바로 구매하기 👇\n{partner_link}\n\n※ 쿠팡 파트너스 링크로 구매 시 소정의 수수료를 받을 수 있습니다.", language=None)
+# 푸터
+with st.expander("📖 완전 무료 제작 가이드"):
+    st.markdown("""
+| 단계 | 도구 | 비용 | 링크 |
+|------|------|------|------|
+| 1️⃣ 스크립트 생성 | 이 앱 (Gemini) | **무료** | — |
+| 2️⃣ 영상+음성+자막 | **Vrew** | **무료** | [vrew.ai](https://vrew.ai) |
+| 3️⃣ 추가 편집 | CapCut | **무료** | [capcut.com](https://capcut.com) |
+| 4️⃣ 이미지 소스 | Pexels | **무료** | [pexels.com](https://pexels.com) |
+| 5️⃣ BGM | YT 오디오 라이브러리 | **무료** | [studio.youtube.com](https://studio.youtube.com) |
+| 6️⃣ 업로드 | YouTube Studio | **무료** | — |
 
-        st.divider()
-        if st.button("🔄 새 영상 만들기", use_container_width=True):
-            for k in ["video_done","video_path","script","selected_product","products","category","uploaded_img"]:
-                st.session_state.pop(k,None)
-            st.rerun()
-
-if __name__ == "__main__":
-    main()
+### 🔑 Gemini API 키 무료 발급
+1. [aistudio.google.com](https://aistudio.google.com) 접속 (구글 계정)
+2. `Get API key` → `Create API key`
+3. Streamlit Cloud Secrets에 입력:
+```toml
+GEMINI_API_KEY = "AIza..."
+```
+""")
